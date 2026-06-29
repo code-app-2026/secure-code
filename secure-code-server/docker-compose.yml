@@ -1,0 +1,201 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: secure_code_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: securepassword123
+      POSTGRES_DB: secure_code_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - secure_code_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d secure_code_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: secure_code_redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - secure_code_network
+
+  loki:
+    image: grafana/loki:2.9.2
+    container_name: secure_code_loki
+    restart: unless-stopped
+    ports:
+      - "3100:3100"
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - loki_data:/tmp/loki
+    networks:
+      - secure_code_network
+
+  wireguard:
+    image: weejewel/wg-easy
+    container_name: secure_code_wireguard
+    restart: unless-stopped
+    network_mode: "host"
+    environment:
+      - WG_HOST=${WG_HOST:-127.0.0.1}
+      - PASSWORD=${WG_PASSWORD:-securecodeadmin}
+      - WG_PORT=51820
+      - WG_DEFAULT_ADDRESS=10.8.0.x
+      - WG_DEFAULT_DNS=1.1.1.1
+      - WG_ALLOWED_IPS=10.8.0.0/24
+    volumes:
+      - wireguard_data:/etc/wireguard
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+
+  backend:
+    build: ./backend
+    container_name: secure_code_backend
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=postgresql://admin:securepassword123@postgres:5432/secure_code_db?schema=public
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - PORT=3001
+      - NODE_ENV=production
+      - JWT_SECRET=super-secret-change-this-in-production
+      - HOST_WORKSPACES_PATH=${HOST_WORKSPACES_PATH:-}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - workspaces_data:/workspaces
+      - sessions_data:/sessions
+      - backups_data:/backups
+    networks:
+      - secure_code_network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-}
+        - NEXT_PUBLIC_WS_URL=${NEXT_PUBLIC_WS_URL:-}
+        - BACKEND_INTERNAL_URL=http://backend:3001
+    container_name: secure_code_frontend
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - BACKEND_INTERNAL_URL=http://backend:3001
+    networks:
+      - secure_code_network
+    depends_on:
+      - backend
+
+  nginx:
+    build: ./nginx
+    container_name: secure_code_nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "3000:3000"
+      - "4000:4000"
+    networks:
+      - secure_code_network
+    depends_on:
+      - frontend
+      - backend
+    volumes:
+      - certbot_www:/var/www/certbot
+      - certbot_conf:/etc/nginx/ssl
+
+  certbot:
+    image: certbot/certbot
+    container_name: secure_code_certbot
+    volumes:
+      - certbot_www:/var/www/certbot
+      - certbot_conf:/etc/letsencrypt
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
+    networks:
+      - secure_code_network
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: secure_code_prometheus
+    restart: unless-stopped
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+    ports:
+      - "9090:9090"
+    networks:
+      - secure_code_network
+
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: secure_code_node_exporter
+    restart: unless-stopped
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--path.rootfs=/rootfs'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    ports:
+      - "9100:9100"
+    networks:
+      - secure_code_network
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.47.0
+    container_name: secure_code_cadvisor
+    restart: unless-stopped
+    privileged: true
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:rw
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    ports:
+      - "8080:8080"
+    networks:
+      - secure_code_network
+
+volumes:
+  postgres_data:
+  redis_data:
+  loki_data:
+  wireguard_data:
+  workspaces_data:
+  certbot_www:
+  certbot_conf:
+  sessions_data:
+  backups_data:
+  prometheus_data:
+
+networks:
+  secure_code_network:
+    name: secure_code_network
+    driver: bridge

@@ -1,0 +1,49 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Sensitive data
+DATABASE_URL
+JWT_SECRET
+AWS_ACCESS_KEY_ID
+AWS_SECRET_ACCESS_KEY
+
+# Build outputs
+dist/
+build/
+.next/
+out/
+
+# Logs
+/logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Cache
+.cache/
+.npm/
+.eslintcache
+
+# Database Dumps
+*.sql
+*.sqlite
+*.sqlite3
+*.db
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+workspaces/
+/admin/
+backend/test.zip

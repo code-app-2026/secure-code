@@ -1,0 +1,40 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    name: Build & Deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Execute Deployment Commands via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: ${{ secrets.SERVER_USERNAME }}
+          password: ${{ secrets.SERVER_PASSWORD }}
+          script: |
+            # Check if directory exists, if not clone it
+            if [ ! -d "secure-code" ]; then
+              git clone https://github.com/abdulrafium/secure-code.git
+            fi
+            
+            # Navigate to the project directory
+            cd secure-code/secure-code-server
+            
+            # Pull the latest code from GitHub
+            git pull origin main
+            
+            # Stop the current running containers safely
+            echo "${{ secrets.SERVER_PASSWORD }}" | sudo -S docker-compose down
+            
+            # Export the WG_HOST automatically so WireGuard knows the server's public IP
+            export WG_HOST=${{ secrets.SERVER_IP }}
+            export WG_PASSWORD=securecodeadmin
+            
+            # Rebuild and start the containers in the background
+            echo "${{ secrets.SERVER_PASSWORD }}" | sudo -S -E docker-compose up --build -d
