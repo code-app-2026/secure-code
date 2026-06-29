@@ -79,3 +79,11 @@ Running `docker-compose up --build -d` instantly orchestrates the entire archite
 
 ### Intelligent Proxying
 The frontend architecture utilizes Next.js rewrites to act as an internal reverse proxy (`/api/*`). This completely eliminates CORS issues and dynamically adapts to the host's Public IP Address without manual configuration, making deployments effortlessly portable.
+
+<br />
+
+---
+
+<div align="center">
+  <h3><strong>Copy Right &copy; All Rights Reserved Design Sequence LLC</strong></h3>
+</div>
