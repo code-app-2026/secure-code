@@ -16,6 +16,11 @@ export default function TerminalPane({ projectId, isViewer, accessToken, hasWork
   }, [hasWorkspaceErrors]);
 
   useEffect(() => {
+    hasWorkspaceErrorsRef.current = hasWorkspaceErrors;
+  }, [hasWorkspaceErrors]);
+
+
+  useEffect(() => {
     if (!terminalRef.current) return;
 
     let isDisposed = false;
@@ -99,7 +104,9 @@ export default function TerminalPane({ projectId, isViewer, accessToken, hasWork
         if (isDisposed) return;
         term.writeln('\x1b[1;32m[Terminal Connected]\x1b[0m');
         socket.emit('terminal.resize', { cols: term.cols, rows: term.rows });
+        setTimeout(safeFit, 100);
       });
+
 
       socket.on('terminal.output', (data: string) => {
         if (isDisposed) return;

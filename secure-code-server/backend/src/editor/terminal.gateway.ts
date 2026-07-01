@@ -53,11 +53,33 @@ export class TerminalGateway
 
   // Map<projectId, Map<userId, count>> for real-time online tracking
   public static projectSessions = new Map<string, Map<string, number>>();
-  // Map<socketId, { projectId: string, userId: string }>
+  // Map<socketId, { projectId: string, userId: string, username: string, activeFile: string | null }>
   private static socketSessions = new Map<
     string,
-    { projectId: string; userId: string }
+    { projectId: string; userId: string; username: string; activeFile: string | null }
   >();
+
+  private broadcastProjectActiveUsers(projectId: string) {
+    const activeUsers: Array<{ userId: string; username: string; activeFile: string | null }> = [];
+    for (const [socketId, session] of TerminalGateway.socketSessions.entries()) {
+      if (session.projectId === projectId) {
+        // Prevent duplicates for the same user if they have multiple tabs, just pick the one with a file if possible
+        const existing = activeUsers.find((u) => u.userId === session.userId);
+        if (existing) {
+          if (!existing.activeFile && session.activeFile) {
+            existing.activeFile = session.activeFile;
+          }
+        } else {
+          activeUsers.push({
+            userId: session.userId,
+            username: session.username,
+            activeFile: session.activeFile,
+          });
+        }
+      }
+    }
+    this.server.to(`project-${projectId}`).emit('project.activeUsers', activeUsers);
+  }
 
   async handleConnection(client: Socket) {
     console.log(`Terminal client connected: ${client.id}`);
@@ -85,16 +107,21 @@ export class TerminalGateway
     }
 
     if (projectId && user) {
+      client.join(`project-${projectId}`);
       TerminalGateway.socketSessions.set(client.id, {
         projectId,
-        userId: user.id,
+        userId: user.id || user.sub,
+        username: user.username || user.name || 'Anonymous',
+        activeFile: null,
       });
       let projectMap = TerminalGateway.projectSessions.get(projectId);
       if (!projectMap) {
         projectMap = new Map<string, number>();
         TerminalGateway.projectSessions.set(projectId, projectMap);
       }
-      projectMap.set(user.id, (projectMap.get(user.id) || 0) + 1);
+      projectMap.set(user.id || user.sub, (projectMap.get(user.id || user.sub) || 0) + 1);
+      
+      setTimeout(() => this.broadcastProjectActiveUsers(projectId), 500);
     }
 
     if (projectId) {
@@ -254,6 +281,7 @@ export class TerminalGateway
         }
       }
       TerminalGateway.socketSessions.delete(client.id);
+      this.broadcastProjectActiveUsers(projectId);
     }
 
     const ptyProcess = this.ptys.get(client.id);
@@ -262,6 +290,19 @@ export class TerminalGateway
       this.ptys.delete(client.id);
       this.inputBuffers.delete(client.id);
       this.users.delete(client.id);
+    }
+  }
+
+  @SubscribeMessage('user.active_file')
+  handleUserActiveFile(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { activeFile: string | null }
+  ) {
+    const session = TerminalGateway.socketSessions.get(client.id);
+    if (session) {
+      session.activeFile = data.activeFile;
+      TerminalGateway.socketSessions.set(client.id, session);
+      this.broadcastProjectActiveUsers(session.projectId);
     }
   }
 

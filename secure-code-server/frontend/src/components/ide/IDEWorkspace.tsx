@@ -6,7 +6,8 @@ import {
   ChevronDown, ChevronRight, ChevronLeft, X, Plus, Terminal as TerminalIcon,
   Search, Type, Languages, Hash, FilePlus, FolderPlus,
   RefreshCw, ChevronUp, FileText, Code, FileCode, Info,
-  CheckSquare, File as GenericFile, Settings, AlertTriangle, Columns
+  CheckSquare, File as GenericFile, Settings, AlertTriangle, Columns,
+  Users, Files, GitBranch, Download, Box, Rocket, Trash2, Eye
 } from 'lucide-react';
 import { Panel, Group as PanelGroup, Separator as PanelResizeHandle } from 'react-resizable-panels';
 import dynamic from 'next/dynamic';
@@ -20,6 +21,7 @@ import { MonacoBinding } from 'y-monaco';
 
 import OutputPane from './OutputPane';
 import PortsPane, { ForwardedPort } from './PortsPane';
+import { io as socketIo, Socket } from 'socket.io-client';
 
 const TerminalPane = dynamic(() => import('./TerminalPane'), { ssr: false });
 
@@ -89,6 +91,56 @@ export default function IDEWorkspace() {
   // CI/CD Pipeline Simulation State
   const [pipelineStage, setPipelineStage] = useState<'code' | 'build' | 'test' | 'deploy' | 'live'>('code');
   const [isPipelineRunning, setIsPipelineRunning] = useState(false);
+
+  // Sidebar Navigation State
+  const [activeSidebar, setActiveSidebar] = useState<'files' | 'search' | 'git' | 'activity'>('files');
+
+  // Global Presence State
+  const [activeUsers, setActiveUsers] = useState<Array<{ userId: string; username: string; activeFile: string | null }>>([]);
+  const presenceSocketRef = useRef<Socket | null>(null);
+
+  // ── Dedicated Presence Socket (always-alive, independent of terminal) ────────
+  useEffect(() => {
+    if (!projectId || !accessToken) return;
+
+    const defaultApiUrl = typeof window !== 'undefined'
+      ? `${window.location.protocol}//${window.location.host}/api`
+      : 'http://localhost:3001';
+    let apiUrl = process.env.NEXT_PUBLIC_API_URL || defaultApiUrl;
+    if (typeof window !== 'undefined' && window.location.protocol === 'https:') {
+      apiUrl = apiUrl.replace('http://', 'https://').replace('ws://', 'wss://').replace(':3001', '');
+    }
+    const backendUrl = apiUrl.replace('/api', '');
+
+    const socket = socketIo(backendUrl, {
+      query: { projectId, token: accessToken },
+      transports: ['websocket'],
+      reconnectionDelay: 500,
+      reconnectionDelayMax: 2000,
+    });
+    presenceSocketRef.current = socket;
+
+    socket.on('connect', () => {
+      socket.emit('user.active_file', { activeFile: activeFilePath || null });
+    });
+
+    socket.on('project.activeUsers', (users: Array<{ userId: string; username: string; activeFile: string | null }>) => {
+      setActiveUsers(users);
+    });
+
+    return () => {
+      socket.disconnect();
+      presenceSocketRef.current = null;
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, accessToken]);
+
+  // Emit active file to presence socket whenever it changes
+  useEffect(() => {
+    if (presenceSocketRef.current?.connected) {
+      presenceSocketRef.current.emit('user.active_file', { activeFile: activeFilePath || null });
+    }
+  }, [activeFilePath]);
 
   const handleApiError = (action: string, err: any, itemName?: string) => {
     console.error(`Failed to ${action}`, err);
@@ -1596,112 +1648,268 @@ export default function IDEWorkspace() {
         </div>
       )}
 
-      {/* Side Bar */}
-      <div style={{ width: `${sidebarWidth}%`, minWidth: '10%', maxWidth: '60%', flexShrink: 0 }} className="flex flex-col bg-[#252526] border-r border-[#3c3c3c]">
-        <div className="flex items-center justify-between px-4 py-2 bg-[#2d2d2d] border-b border-[#3c3c3c]">
-          <span className="text-xs font-semibold text-slate-300 tracking-wider">EXPLORER</span>
-          <div className="flex space-x-1">
-            <FilePlus
-              className={`w-4 h-4 text-slate-400 ${isViewer ? 'opacity-30 cursor-not-allowed' : 'hover:text-white cursor-pointer'}`}
-              onClick={() => !isViewer && setShowNewItemInput('file')}
-            />
-            <FolderPlus
-              className={`w-4 h-4 text-slate-400 ${isViewer ? 'opacity-30 cursor-not-allowed' : 'hover:text-white cursor-pointer'}`}
-              onClick={() => !isViewer && setShowNewItemInput('folder')}
-            />
-            <div className="relative flex items-center">
-              <div
-                className="flex items-center cursor-pointer hover:bg-white/10 rounded px-1.5 py-0.5"
-                onClick={() => setShowTerminalMenu(!showTerminalMenu)}
-                title="Terminal Options"
-              >
-                {showTerminalMenu ? (
-                  <ChevronUp className="w-4 h-4 text-slate-400 hover:text-white" />
-                ) : (
-                  <ChevronDown className="w-4 h-4 text-slate-400 hover:text-white" />
-                )}
-              </div>
+      {/* Activity Bar (Icon Rail) */}
+      <div className="w-14 bg-[#2c2c2c] border-r border-[#1a1a1a] flex flex-col items-center py-3 shrink-0 gap-1">
+        {/* Explorer */}
+        <button
+          title="Explorer"
+          onClick={() => setActiveSidebar('files')}
+          className={`relative w-10 h-10 flex items-center justify-center rounded-lg transition-all duration-150 ${
+            activeSidebar === 'files' ? 'bg-[#007acc] text-white shadow-md shadow-[#007acc]/30' : 'text-slate-400 hover:text-white hover:bg-white/10'
+          }`}
+        >
+          <Files className="w-5 h-5" />
+        </button>
 
-              {showTerminalMenu && (
-                <>
-                  <div className="fixed inset-0 z-40" onClick={() => setShowTerminalMenu(false)} />
-                  <div className="absolute top-6 right-0 z-50 bg-[#252526] border border-[#454545] rounded shadow-xl py-1 min-w-[140px]">
-                    <button
-                      className="w-full text-left px-3 py-1.5 text-[12px] text-slate-300 hover:bg-[#094771] hover:text-white flex items-center"
-                      onClick={() => {
-                        const newId = `term-${Date.now()}`;
-                        if (!terminalOpen) {
-                          setTerminals([{ id: newId, active: true }]);
-                          setTerminalOpen(true);
-                        } else {
-                          setTerminals(prev => [...prev.map(t => ({ ...t, active: false })), { id: newId, active: true }]);
-                        }
-                        setShowTerminalMenu(false);
-                      }}
-                    >
-                      <Plus className="w-3 h-3 mr-2" />
-                      New Terminal
-                    </button>
+        {/* Search */}
+        <button
+          title="Search"
+          onClick={() => setActiveSidebar('search')}
+          className={`relative w-10 h-10 flex items-center justify-center rounded-lg transition-all duration-150 ${
+            activeSidebar === 'search' ? 'bg-[#007acc] text-white shadow-md shadow-[#007acc]/30' : 'text-slate-400 hover:text-white hover:bg-white/10'
+          }`}
+        >
+          <Search className="w-5 h-5" />
+        </button>
+
+        {/* Source Control */}
+        <button
+          title="Source Control"
+          onClick={() => setActiveSidebar('git')}
+          className={`relative w-10 h-10 flex items-center justify-center rounded-lg transition-all duration-150 ${
+            activeSidebar === 'git' ? 'bg-[#007acc] text-white shadow-md shadow-[#007acc]/30' : 'text-slate-400 hover:text-white hover:bg-white/10'
+          }`}
+        >
+          <GitBranch className="w-5 h-5" />
+        </button>
+
+        {/* Live Activity (Admin only) */}
+        {userRole === 'Admin' && (
+          <button
+            title={`Live Activity${activeUsers.length > 0 ? ` (${activeUsers.length} online)` : ''}`}
+            onClick={() => setActiveSidebar('activity')}
+            className={`relative w-10 h-10 flex items-center justify-center rounded-lg transition-all duration-150 ${
+              activeSidebar === 'activity' ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/30' : 'text-slate-400 hover:text-emerald-400 hover:bg-white/10'
+            }`}
+          >
+            <Users className="w-5 h-5" />
+            {activeUsers.length > 0 && (
+              <span className="absolute -top-0.5 -right-0.5 bg-emerald-500 text-[9px] font-bold text-white w-4 h-4 rounded-full flex items-center justify-center leading-none shadow">
+                {activeUsers.length > 9 ? '9+' : activeUsers.length}
+              </span>
+            )}
+          </button>
+        )}
+      </div>
+
+      {/* Sidebar Panel */}
+      <div style={{ width: `${sidebarWidth}%`, minWidth: '10%', maxWidth: '60%', flexShrink: 0 }} className="flex flex-col bg-[#252526] border-r border-[#3c3c3c]">
+
+        {/* ── EXPLORER ── */}
+        {activeSidebar === 'files' && (
+          <>
+            <div className="flex items-center justify-between px-4 py-2 bg-[#2d2d2d] border-b border-[#3c3c3c]">
+              <span className="text-xs font-semibold text-slate-300 tracking-wider">EXPLORER</span>
+              <div className="flex space-x-1">
+                <FilePlus
+                  className={`w-4 h-4 text-slate-400 ${isViewer ? 'opacity-30 cursor-not-allowed' : 'hover:text-white cursor-pointer'}`}
+                  onClick={() => !isViewer && setShowNewItemInput('file')}
+                />
+                <FolderPlus
+                  className={`w-4 h-4 text-slate-400 ${isViewer ? 'opacity-30 cursor-not-allowed' : 'hover:text-white cursor-pointer'}`}
+                  onClick={() => !isViewer && setShowNewItemInput('folder')}
+                />
+                <div className="relative flex items-center">
+                  <div
+                    className="flex items-center cursor-pointer hover:bg-white/10 rounded px-1.5 py-0.5"
+                    onClick={() => setShowTerminalMenu(!showTerminalMenu)}
+                    title="Terminal Options"
+                  >
+                    {showTerminalMenu ? (
+                      <ChevronUp className="w-4 h-4 text-slate-400 hover:text-white" />
+                    ) : (
+                      <ChevronDown className="w-4 h-4 text-slate-400 hover:text-white" />
+                    )}
                   </div>
-                </>
+                  {showTerminalMenu && (
+                    <>
+                      <div className="fixed inset-0 z-40" onClick={() => setShowTerminalMenu(false)} />
+                      <div className="absolute top-6 right-0 z-50 bg-[#252526] border border-[#454545] rounded shadow-xl py-1 min-w-[140px]">
+                        <button
+                          className="w-full text-left px-3 py-1.5 text-[12px] text-slate-300 hover:bg-[#094771] hover:text-white flex items-center"
+                          onClick={() => {
+                            const newId = `term-${Date.now()}`;
+                            if (!terminalOpen) {
+                              setTerminals([{ id: newId, active: true }]);
+                              setTerminalOpen(true);
+                            } else {
+                              setTerminals(prev => [...prev.map(t => ({ ...t, active: false })), { id: newId, active: true }]);
+                            }
+                            setShowTerminalMenu(false);
+                          }}
+                        >
+                          <Plus className="w-3 h-3 mr-2" />
+                          New Terminal
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+                <RefreshCw className={`w-4 h-4 text-slate-400 hover:text-white cursor-pointer ${isManualRefreshing ? 'animate-spin text-white' : ''}`} onClick={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  if (isManualRefreshing) return;
+                  setIsManualRefreshing(true);
+                  const endpoint = projectId ? `/editor/tree?path=&projectId=${projectId}` : `/editor/tree?path=`;
+                  api.get(endpoint).then(data => {
+                    setTree(data || []);
+                    setRefreshToggle(prev => prev + 1);
+                    if (projectId) {
+                      api.patch(`/projects/${projectId}/recalculate-storage`, {}).catch(() => {});
+                    }
+                  }).catch(console.error).finally(() => {
+                    setTimeout(() => setIsManualRefreshing(false), 500);
+                  });
+                }} />
+              </div>
+            </div>
+            <div className="flex-1 overflow-y-auto custom-scrollbar p-2" onClick={(e) => {
+              if (e.target === e.currentTarget) {
+                setActiveNodePaths(new Set());
+                setActiveFolderPath('');
+              }
+            }}>
+              <FileTree
+                nodes={tree}
+                onFileClick={handleFileClick}
+                projectId={projectId || ''}
+                isViewer={isViewer}
+                restrictedFiles={restrictedFiles}
+                activeNodePaths={activeNodePaths}
+                onNodeSelect={handleNodeSelect}
+                refreshToggle={refreshToggle}
+                showNewItemInput={showNewItemInput}
+                activeFolderPath={activeFolderPath}
+                newItemName={newItemName}
+                setNewItemName={setNewItemName}
+                handleCreateItem={handleCreateItem}
+                setShowNewItemInput={setShowNewItemInput}
+                onContextMenu={(e, node) => {
+                  e.preventDefault();
+                  if (!activeNodePaths.has(node.path)) {
+                    setActiveNodePaths(new Set([node.path]));
+                  }
+                  if (node.isDirectory) setActiveFolderPath(node.path);
+                  else setActiveFolderPath(node.path.substring(0, node.path.lastIndexOf('/')));
+                  setContextMenu({ x: e.clientX, y: e.clientY, node });
+                }}
+                renamingNodePath={renamingNodePath}
+                onRenameCommit={handleRenameCommit}
+                onRenameCancel={handleRenameCancel}
+                expandPath={activeFilePath}
+                fileErrors={fileErrors}
+              />
+            </div>
+          </>
+        )}
+
+        {/* ── LIVE ACTIVITY (Admin only) ── */}
+        {activeSidebar === 'activity' && userRole === 'Admin' && (
+          <div className="flex-1 flex flex-col overflow-hidden min-h-0">
+            {/* Header */}
+            <div className="flex items-center justify-between px-4 py-[9px] bg-[#2d2d2d] border-b border-[#3c3c3c] flex-shrink-0">
+              <div className="flex items-center space-x-2">
+                <Users className="w-3.5 h-3.5 text-emerald-400" />
+                <span className="text-[11px] font-semibold text-slate-300 tracking-wider uppercase">Live Activity</span>
+              </div>
+              <div className="flex items-center space-x-1.5">
+                <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full ${
+                  activeUsers.length > 0 ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-700 text-slate-500'
+                }`}>
+                  {activeUsers.length} online
+                </span>
+              </div>
+            </div>
+
+            {/* User List */}
+            <div className="flex-1 overflow-y-auto custom-scrollbar">
+              {activeUsers.length === 0 ? (
+                <div className="flex flex-col items-center justify-center h-full py-12 px-4 text-center">
+                  <div className="w-12 h-12 rounded-full bg-[#2a2a2a] border border-[#3c3c3c] flex items-center justify-center mb-3">
+                    <Users className="w-5 h-5 text-slate-600" />
+                  </div>
+                  <p className="text-[12px] text-slate-500 font-medium">No users online</p>
+                  <p className="text-[11px] text-slate-600 mt-1">Users will appear here when they open the project IDE</p>
+                </div>
+              ) : (
+                <div className="p-3 space-y-2">
+                  {activeUsers.map((u, i) => {
+                    const initials = u.username
+                      ? u.username.split(' ').map((w: string) => w[0]).join('').toUpperCase().slice(0, 2)
+                      : '??';
+                    const colors = [
+                      ['#6366f1','#312e81'], ['#0ea5e9','#0c4a6e'], ['#10b981','#064e3b'],
+                      ['#f59e0b','#78350f'], ['#ef4444','#7f1d1d'], ['#a855f7','#4a044e'],
+                    ];
+                    const [fgColor, bgColorDark] = colors[i % colors.length];
+                    const fileName = u.activeFile ? u.activeFile.split('/').pop() : null;
+
+                    return (
+                      <div
+                        key={u.userId}
+                        onClick={() => {
+                          if (u.activeFile) {
+                            handleFileClick({ path: u.activeFile, name: fileName || u.activeFile, isDirectory: false });
+                          }
+                        }}
+                        className={`group flex items-start gap-3 p-3 rounded-lg border transition-all duration-150 ${
+                          u.activeFile
+                            ? 'border-[#3c3c3c] hover:border-[#555] bg-[#1e1e1e] hover:bg-[#252525] cursor-pointer'
+                            : 'border-[#2e2e2e] bg-[#1a1a1a] cursor-default'
+                        }`}
+                      >
+                        {/* Avatar */}
+                        <div className="relative flex-shrink-0">
+                          <div
+                            className="w-9 h-9 rounded-full flex items-center justify-center text-[11px] font-bold shadow-sm"
+                            style={{ backgroundColor: bgColorDark, color: fgColor, border: `1.5px solid ${fgColor}33` }}
+                          >
+                            {initials}
+                          </div>
+                          {/* Online pulse */}
+                          <span className="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-emerald-500 border-2 border-[#1e1e1e] rounded-full">
+                            <span className="absolute inset-0 rounded-full bg-emerald-400 animate-ping opacity-75" />
+                          </span>
+                        </div>
+
+                        {/* Info */}
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center justify-between">
+                            <p className="text-[12px] font-semibold text-slate-200 truncate">{u.username}</p>
+                            {u.activeFile && (
+                              <span className="text-[9px] text-slate-500 group-hover:text-emerald-400 transition-colors ml-1 flex-shrink-0">Click to follow →</span>
+                            )}
+                          </div>
+
+                          {u.activeFile ? (
+                            <div className="flex items-center gap-1 mt-0.5">
+                              <FileCode className="w-3 h-3 text-blue-400 flex-shrink-0" />
+                              <p className="text-[11px] text-blue-400 group-hover:text-blue-300 truncate font-mono transition-colors" title={u.activeFile}>
+                                {fileName}
+                              </p>
+                            </div>
+                          ) : (
+                            <p className="text-[11px] text-slate-600 mt-0.5">Idle — no file open</p>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
               )}
             </div>
-            <RefreshCw className={`w-4 h-4 text-slate-400 hover:text-white cursor-pointer ${isManualRefreshing ? 'animate-spin text-white' : ''}`} onClick={(e) => {
-              e.stopPropagation();
-              e.preventDefault();
-              if (isManualRefreshing) return;
-              setIsManualRefreshing(true);
-              const endpoint = projectId ? `/editor/tree?path=&projectId=${projectId}` : `/editor/tree?path=`;
-              api.get(endpoint).then(data => {
-                setTree(data || []);
-                setRefreshToggle(prev => prev + 1);
-                if (projectId) {
-                  api.patch(`/projects/${projectId}/recalculate-storage`, {}).catch(() => {});
-                }
-              }).catch(console.error).finally(() => {
-                setTimeout(() => setIsManualRefreshing(false), 500); // give it at least 500ms to spin
-              });
-            }} />
           </div>
-        </div>
-
-        <div className="flex-1 overflow-y-auto custom-scrollbar p-2" onClick={(e) => {
-          if (e.target === e.currentTarget) {
-            setActiveNodePaths(new Set());
-            setActiveFolderPath('');
-          }
-        }}>
-          <FileTree
-            nodes={tree}
-            onFileClick={handleFileClick}
-            projectId={projectId || ''}
-            isViewer={isViewer}
-            restrictedFiles={restrictedFiles}
-            activeNodePaths={activeNodePaths}
-            onNodeSelect={handleNodeSelect}
-            refreshToggle={refreshToggle}
-            showNewItemInput={showNewItemInput}
-            activeFolderPath={activeFolderPath}
-            newItemName={newItemName}
-            setNewItemName={setNewItemName}
-            handleCreateItem={handleCreateItem}
-            setShowNewItemInput={setShowNewItemInput}
-            onContextMenu={(e, node) => {
-              e.preventDefault();
-              if (!activeNodePaths.has(node.path)) {
-                setActiveNodePaths(new Set([node.path]));
-              }
-              if (node.isDirectory) setActiveFolderPath(node.path);
-              else setActiveFolderPath(node.path.substring(0, node.path.lastIndexOf('/')));
-              setContextMenu({ x: e.clientX, y: e.clientY, node });
-            }}
-            renamingNodePath={renamingNodePath}
-            onRenameCommit={handleRenameCommit}
-            onRenameCancel={handleRenameCancel}
-            expandPath={activeFilePath}
-            fileErrors={fileErrors}
-          />
-        </div>
+        )}
       </div>
 
       {/* Custom File Tree Context Menu */}
