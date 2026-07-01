@@ -1413,15 +1413,11 @@ export default function IDEWorkspace() {
     const username = userInfo?.username || 'Guest';
     const color = getHashColor(username);
 
-    if (!isViewer) {
-      provider.awareness.setLocalStateField('user', {
-        name: username,
-        color: color
-      });
-    } else {
-      // Clear awareness for viewers so they don't render cursors
-      provider.awareness.setLocalStateField('user', null);
-    }
+    // Always set awareness so all roles (including Admin/Viewer) can see cursors
+    provider.awareness.setLocalStateField('user', {
+      name: username,
+      color: color
+    });
 
     let styleEl = document.getElementById('yjs-awareness-styles') as HTMLStyleElement;
     if (!styleEl) {
