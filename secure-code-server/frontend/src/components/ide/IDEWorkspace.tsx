@@ -96,7 +96,7 @@ export default function IDEWorkspace() {
   const [activeSidebar, setActiveSidebar] = useState<'files' | 'search' | 'git' | 'activity'>('files');
 
   // Global Presence State
-  const [activeUsers, setActiveUsers] = useState<Array<{ userId: string; username: string; activeFile: string | null }>>([]);
+  const [activeUsers, setActiveUsers] = useState<Array<{ userId: string; username: string; role: string; activeFile: string | null }>>([]);
   const presenceSocketRef = useRef<Socket | null>(null);
 
   // ── Dedicated Presence Socket (always-alive, independent of terminal) ────────
@@ -124,7 +124,7 @@ export default function IDEWorkspace() {
       socket.emit('user.active_file', { activeFile: activeFilePath || null });
     });
 
-    socket.on('project.activeUsers', (users: Array<{ userId: string; username: string; activeFile: string | null }>) => {
+    socket.on('project.activeUsers', (users: Array<{ userId: string; username: string; role: string; activeFile: string | null }>) => {
       setActiveUsers(users);
     });
 
@@ -1494,47 +1494,26 @@ export default function IDEWorkspace() {
             .yRemoteSelectionHead-${clientID} {
               position: absolute !important;
               border-left: ${ucolor} solid 2px !important;
-              border-top: ${ucolor} solid 2px !important;
-              border-bottom: ${ucolor} solid 2px !important;
               height: 100% !important;
               box-sizing: border-box !important;
-              z-index: 9 !important;
-              pointer-events: auto !important;
-            }
-            .yRemoteSelectionHead-${clientID}:hover {
-              z-index: 100 !important;
+              z-index: 99 !important;
             }
             .yRemoteSelectionHead-${clientID}::after {
-              position: absolute !important;
-              content: ' ' !important;
-              border: 3px solid ${ucolor} !important;
-              border-radius: 4px !important;
-              left: -4px !important;
-              top: -5px !important;
-              z-index: 9 !important;
-            }
-            .yRemoteSelectionHead-${clientID}::before {
               content: '${uname}' !important;
               position: absolute !important;
-              top: -18px !important;
+              top: -15px !important;
               left: -2px !important;
-              font-size: 11px !important;
-              font-family: sans-serif !important;
+              font-size: 10px !important;
+              font-family: 'Inter', sans-serif !important;
               background-color: ${ucolor} !important;
               color: #ffffff !important;
-              text-shadow: 0px 1px 2px rgba(0,0,0,0.8) !important;
-              padding: 2px 6px !important;
-              border-radius: 3px !important;
+              padding: 0px 4px !important;
+              border-radius: 2px !important;
               white-space: nowrap !important;
-              opacity: 0.8 !important;
+              opacity: 0.9 !important;
               pointer-events: none !important;
-              z-index: 10 !important;
-              box-shadow: 0 1px 3px rgba(0,0,0,0.3) !important;
-              transition: opacity 0.2s ease-in-out !important;
-            }
-            .yRemoteSelectionHead-${clientID}:hover::before {
-              opacity: 1 !important;
               z-index: 100 !important;
+              box-shadow: 0 1px 2px rgba(0,0,0,0.3) !important;
             }
           `;
         }
@@ -1885,7 +1864,14 @@ export default function IDEWorkspace() {
                         {/* Info */}
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center justify-between">
-                            <p className="text-[12px] font-semibold text-slate-200 truncate">{u.username}</p>
+                            <div className="flex items-center space-x-1.5 min-w-0">
+                              <p className="text-[12px] font-semibold text-slate-200 truncate">{u.username}</p>
+                              {u.role && u.role !== 'Admin' && (
+                                <span className="text-[9px] font-medium px-1.5 py-0.5 rounded bg-slate-700/50 text-slate-400 border border-slate-600/50">
+                                  {u.role}
+                                </span>
+                              )}
+                            </div>
                             {u.activeFile && (
                               <span className="text-[9px] text-slate-500 group-hover:text-emerald-400 transition-colors ml-1 flex-shrink-0">Click to follow →</span>
                             )}

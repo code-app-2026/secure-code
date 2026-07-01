@@ -53,16 +53,16 @@ export class TerminalGateway
 
   // Map<projectId, Map<userId, count>> for real-time online tracking
   public static projectSessions = new Map<string, Map<string, number>>();
-  // Map<socketId, { projectId: string, userId: string, username: string, activeFile: string | null }>
+  // Map<socketId, { projectId: string, userId: string, username: string, role: string, activeFile: string | null }>
   private static socketSessions = new Map<
     string,
-    { projectId: string; userId: string; username: string; activeFile: string | null }
+    { projectId: string; userId: string; username: string; role: string; activeFile: string | null }
   >();
 
   private broadcastProjectActiveUsers(projectId: string) {
-    const activeUsers: Array<{ userId: string; username: string; activeFile: string | null }> = [];
+    const activeUsers: Array<{ userId: string; username: string; role: string; activeFile: string | null }> = [];
     for (const [socketId, session] of TerminalGateway.socketSessions.entries()) {
-      if (session.projectId === projectId) {
+      if (session.projectId === projectId && session.role !== 'Admin') {
         // Prevent duplicates for the same user if they have multiple tabs, just pick the one with a file if possible
         const existing = activeUsers.find((u) => u.userId === session.userId);
         if (existing) {
@@ -73,6 +73,7 @@ export class TerminalGateway
           activeUsers.push({
             userId: session.userId,
             username: session.username,
+            role: session.role,
             activeFile: session.activeFile,
           });
         }
@@ -112,6 +113,7 @@ export class TerminalGateway
         projectId,
         userId: user.id || user.sub,
         username: user.username || user.name || 'Anonymous',
+        role: user.role || 'Developer',
         activeFile: null,
       });
       let projectMap = TerminalGateway.projectSessions.get(projectId);
@@ -224,9 +226,14 @@ export class TerminalGateway
           try {
             await execAsync(`docker run -d --rm --name ${containerName} --network ${networkName} -v "${finalHostMountPath}:/workspace" -w /workspace node:18 tail -f /dev/null`);
           } catch (e: any) {
-            console.error('Failed to start docker container:', e);
-            client.emit('terminal.output', `\\r\\n\\x1b[31mError: Failed to start isolated container. ${e.message}\\x1b[0m\\r\\n`);
-            return;
+            const errorMsg = e.message || e.stderr || '';
+            if (errorMsg.includes('Conflict') || errorMsg.includes('already in use')) {
+              console.log(`Container ${containerName} was already started by another concurrent process.`);
+            } else {
+              console.error('Failed to start docker container:', e);
+              client.emit('terminal.output', `\r\n\x1b[31mError: Failed to start isolated container. ${e.message}\x1b[0m\r\n`);
+              return;
+            }
           }
         }
 
