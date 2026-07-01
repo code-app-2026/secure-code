@@ -15,6 +15,10 @@ const nextConfig: NextConfig = {
       {
         source: '/socket.io/:path*',
         destination: `${backendUrl}/socket.io/:path*`, // Proxy WebSockets
+      },
+      {
+        source: '/yjs',
+        destination: `${backendUrl}/yjs`, // Proxy Yjs WebSockets
       }
     ];
   },

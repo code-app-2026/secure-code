@@ -80,6 +80,8 @@ export default function IDEWorkspace() {
 
   const activeFile = openFiles.find(f => f.path === activeFilePath) || null;
   const isViewer = userRole.toLowerCase() === 'viewer';
+  // Admin is a read-only observer in the editor — they see real-time cursors but cannot edit
+  const isAdmin = userRole.toLowerCase() === 'admin';
 
   const [terminals, setTerminals] = useState([{ id: 'term-1', active: true }]);
   const [showNewItemInput, setShowNewItemInput] = useState<'file' | 'folder' | null>(null);
@@ -215,6 +217,8 @@ export default function IDEWorkspace() {
   const providerRef = useRef<WebsocketProvider | null>(null);
   const bindingRef = useRef<MonacoBinding | null>(null);
   const yDocRef = useRef<Y.Doc | null>(null);
+  // Use a ref for userInfo so changes don't tear down the Yjs connection
+  const userInfoRef = useRef<any>(null);
 
   // Panel sizes in percent
   const [sidebarWidth, setSidebarWidth] = useState(20);
@@ -510,6 +514,7 @@ export default function IDEWorkspace() {
         try {
           const parsed = JSON.parse(atob(token.split('.')[1]));
           setUserInfo(parsed);
+          userInfoRef.current = parsed;
           if (parsed.role) { setUserRole(parsed.role); currentUserRole = parsed.role; }
         } catch (e) { }
       }
@@ -524,6 +529,7 @@ export default function IDEWorkspace() {
         try {
           const parsed = JSON.parse(atob(token.split('.')[1]));
           setUserInfo(parsed);
+          userInfoRef.current = parsed;
           if (parsed.role) { setUserRole(parsed.role); currentUserRole = parsed.role; }
         } catch (e) { }
       }
@@ -1427,6 +1433,8 @@ export default function IDEWorkspace() {
   };
 
   // Initialize Yjs whenever active file or editor changes
+  // NOTE: userInfo is read from a ref so that changes to it (e.g., after login completes)
+  // do NOT tear down and recreate the Yjs connection, which would break collaboration.
   useEffect(() => {
     if (!editorRef.current || !activeFilePath) return;
 
@@ -1448,13 +1456,19 @@ export default function IDEWorkspace() {
     }
     const yjsUrl = wsUrl.endsWith('/') ? `${wsUrl}yjs` : `${wsUrl}/yjs`;
 
-    // Unique room name per file
+    // Unique room name per project + file — all users on same file join same room
     const roomName = `room-${projectId || 'default'}-${activeFilePath}`;
 
     const provider = new WebsocketProvider(yjsUrl, roomName, yDoc);
     providerRef.current = provider;
 
-    // Set awareness (Cursor presence)
+    // Resolve the current user's display name from the JWT (stored in ref to avoid re-runs)
+    const info = userInfoRef.current;
+    const baseUsername = info?.username || info?.name || info?.email?.split('@')[0] || 'Guest';
+    // Append role tag for admin so developers know they're being observed
+    const username = isAdmin ? `${baseUsername} (Admin)` : baseUsername;
+
+    // Assign a consistent color per username
     const getHashColor = (str: string) => {
       let hash = 0;
       for (let i = 0; i < str.length; i++) {
@@ -1462,15 +1476,12 @@ export default function IDEWorkspace() {
       }
       return cursorColors[Math.abs(hash) % cursorColors.length];
     };
-    const username = userInfo?.username || 'Guest';
     const color = getHashColor(username);
 
-    // Always set awareness so all roles (including Admin/Viewer) can see cursors
-    provider.awareness.setLocalStateField('user', {
-      name: username,
-      color: color
-    });
+    // Set awareness for ALL roles so cursors are always visible to everyone
+    provider.awareness.setLocalStateField('user', { name: username, color });
 
+    // Inject dynamic CSS for remote cursors/selections
     let styleEl = document.getElementById('yjs-awareness-styles') as HTMLStyleElement;
     if (!styleEl) {
       styleEl = document.createElement('style');
@@ -1482,41 +1493,41 @@ export default function IDEWorkspace() {
       const states = provider.awareness.getStates();
       let css = '';
       states.forEach((state: any, clientID: number) => {
-        if (state.user) {
-          const ucolor = state.user.color || '#ff8c33';
-          const uname = state.user.name || 'Anonymous';
-          // Fix: CSS classes must safely escape clientID if needed, but it's just a number.
-          css += `
-            .yRemoteSelection-${clientID} {
-              background-color: ${ucolor} !important;
-              opacity: 0.3 !important;
-            }
-            .yRemoteSelectionHead-${clientID} {
-              position: absolute !important;
-              border-left: ${ucolor} solid 2px !important;
-              height: 100% !important;
-              box-sizing: border-box !important;
-              z-index: 99 !important;
-            }
-            .yRemoteSelectionHead-${clientID}::after {
-              content: '${uname}' !important;
-              position: absolute !important;
-              top: -15px !important;
-              left: -2px !important;
-              font-size: 10px !important;
-              font-family: 'Inter', sans-serif !important;
-              background-color: ${ucolor} !important;
-              color: #ffffff !important;
-              padding: 0px 4px !important;
-              border-radius: 2px !important;
-              white-space: nowrap !important;
-              opacity: 0.9 !important;
-              pointer-events: none !important;
-              z-index: 100 !important;
-              box-shadow: 0 1px 2px rgba(0,0,0,0.3) !important;
-            }
-          `;
-        }
+        // Skip own client — Monaco already renders the local cursor
+        if (clientID === provider.awareness.clientID) return;
+        if (!state.user) return;
+        const ucolor = state.user.color || '#ff8c33';
+        const uname = (state.user.name || 'Anonymous').replace(/'/g, "\\'");
+        css += `
+          .yRemoteSelection-${clientID} {
+            background-color: ${ucolor}55 !important;
+          }
+          .yRemoteSelectionHead-${clientID} {
+            position: absolute !important;
+            border-left: 2px solid ${ucolor} !important;
+            height: 100% !important;
+            box-sizing: border-box !important;
+            z-index: 99 !important;
+          }
+          .yRemoteSelectionHead-${clientID}::after {
+            content: '${uname}' !important;
+            position: absolute !important;
+            top: -16px !important;
+            left: -1px !important;
+            font-size: 10px !important;
+            font-weight: 600 !important;
+            font-family: 'Inter', 'Segoe UI', sans-serif !important;
+            background: ${ucolor} !important;
+            color: #fff !important;
+            padding: 1px 5px !important;
+            border-radius: 3px 3px 3px 0 !important;
+            white-space: nowrap !important;
+            opacity: 1 !important;
+            pointer-events: none !important;
+            z-index: 100 !important;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.4) !important;
+          }
+        `;
       });
       if (styleEl) styleEl.innerHTML = css;
     };
@@ -1527,24 +1538,24 @@ export default function IDEWorkspace() {
     provider.on('sync', (isSynced: boolean) => {
       if (isSynced && !bindingRef.current) {
         const model = editorRef.current?.getModel();
-        if (model) {
-          // If the Yjs document is completely empty (new room or server restarted),
-          // seed it with the model's current content (which was fetched from disk)
-          if (yText.toString() === '') {
-            const val = model.getValue();
-            if (val) {
-              yText.insert(0, val);
-            }
-          }
-          // Bind Monaco to Yjs only AFTER syncing to prevent clearing the editor
-          const binding = new MonacoBinding(
-            yText,
-            model,
-            new Set([editorRef.current]),
-            provider.awareness
-          );
-          bindingRef.current = binding;
+        if (!model) return;
+
+        // Seed the Yjs doc with the file content only if the room is empty
+        // (first user opening this file). Other users will receive it via Yjs sync.
+        if (yText.toString() === '') {
+          const val = model.getValue();
+          if (val) yText.insert(0, val);
         }
+
+        // Create the two-way binding between Monaco and Yjs
+        // Viewers get awareness (so their cursor shows) but editors get full two-way binding
+        const binding = new MonacoBinding(
+          yText,
+          model,
+          new Set([editorRef.current]),
+          provider.awareness
+        );
+        bindingRef.current = binding;
       }
     });
 
@@ -1552,7 +1563,8 @@ export default function IDEWorkspace() {
       provider.awareness.off('change', updateAwarenessStyles);
       destroyYjs();
     };
-  }, [activeFilePath, projectId, userInfo, isEditorMounted]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeFilePath, projectId, isEditorMounted]);
 
   return (
     <div ref={containerRef} className="flex h-screen w-full bg-[#1e1e1e] text-[#cccccc] overflow-hidden font-sans select-none relative">
@@ -1838,7 +1850,10 @@ export default function IDEWorkspace() {
                         key={u.userId}
                         onClick={() => {
                           if (u.activeFile) {
+                            // Navigate to the file and switch to the editor view
                             handleFileClick({ path: u.activeFile, name: fileName || u.activeFile, isDirectory: false });
+                            // Switch sidebar away from activity panel so the editor is visible
+                            setActiveSidebar('files');
                           }
                         }}
                         className={`group flex items-start gap-3 p-3 rounded-lg border transition-all duration-150 ${
@@ -2141,6 +2156,19 @@ export default function IDEWorkspace() {
             </div>
           )}
 
+          {/* Admin Observer Mode Banner */}
+          {isAdmin && activeFile && activeUsers.some(u => u.activeFile === activeFile.path) && (
+            <div className="flex items-center gap-2 px-4 py-1 bg-amber-500/10 border-b border-amber-500/30 flex-shrink-0">
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse flex-shrink-0" />
+              <span className="text-[11px] text-amber-400 font-medium">
+                Observer Mode — watching live edits on this file
+              </span>
+              <span className="ml-auto text-[10px] text-amber-500/70">
+                {activeUsers.filter(u => u.activeFile === activeFile.path).map(u => u.username).join(', ')} editing
+              </span>
+            </div>
+          )}
+
           {/* Monaco Editor */}
           <div className="flex-1 relative border-t border-[#2d2d2d] min-h-0">
             {activeFile ? (
@@ -2171,7 +2199,7 @@ export default function IDEWorkspace() {
                       return prev;
                     });
                   }}
-                  options={{ ...EDITOR_OPTIONS, readOnly: isViewer }}
+                  options={{ ...EDITOR_OPTIONS, readOnly: isViewer || isAdmin }}
                 />
               )
             ) : (
