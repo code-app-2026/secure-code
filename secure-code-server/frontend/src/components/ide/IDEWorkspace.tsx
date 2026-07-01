@@ -100,6 +100,13 @@ export default function IDEWorkspace() {
   // Global Presence State
   const [activeUsers, setActiveUsers] = useState<Array<{ userId: string; username: string; role: string; activeFile: string | null }>>([]);
   const presenceSocketRef = useRef<Socket | null>(null);
+  // Ref that always holds the latest activeFilePath — readable in socket callbacks without stale closures
+  const activeFilePathRef = useRef<string | null>(null);
+
+  // Keep ref in sync so socket callbacks always read latest path
+  useEffect(() => {
+    activeFilePathRef.current = activeFilePath;
+  }, [activeFilePath]);
 
   // ── Dedicated Presence Socket (always-alive, independent of terminal) ────────
   useEffect(() => {
@@ -123,7 +130,9 @@ export default function IDEWorkspace() {
     presenceSocketRef.current = socket;
 
     socket.on('connect', () => {
-      socket.emit('user.active_file', { activeFile: activeFilePath || null });
+      // Use ref to read the CURRENT activeFilePath, not the stale closure value
+      // (the socket connects before localStorage state is restored on first load)
+      socket.emit('user.active_file', { activeFile: activeFilePathRef.current || null });
     });
 
     socket.on('project.activeUsers', (users: Array<{ userId: string; username: string; role: string; activeFile: string | null }>) => {
@@ -137,12 +146,26 @@ export default function IDEWorkspace() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, accessToken]);
 
-  // Emit active file to presence socket whenever it changes
+  // Emit active file to presence socket whenever it changes.
+  // Retries with backoff if socket is not yet connected (handles the race where
+  // localStorage state is restored before the socket handshake completes).
   useEffect(() => {
-    if (presenceSocketRef.current?.connected) {
-      presenceSocketRef.current.emit('user.active_file', { activeFile: activeFilePath || null });
+    const socket = presenceSocketRef.current;
+    if (!socket) return;
+
+    if (socket.connected) {
+      socket.emit('user.active_file', { activeFile: activeFilePath || null });
+      return;
     }
+
+    // Not connected yet — retry once the socket connects
+    const onConnect = () => {
+      socket.emit('user.active_file', { activeFile: activeFilePath || null });
+    };
+    socket.once('connect', onConnect);
+    return () => { socket.off('connect', onConnect); };
   }, [activeFilePath]);
+
 
   const handleApiError = (action: string, err: any, itemName?: string) => {
     console.error(`Failed to ${action}`, err);
@@ -1459,7 +1482,10 @@ export default function IDEWorkspace() {
     // Unique room name per project + file — all users on same file join same room
     const roomName = `room-${projectId || 'default'}-${activeFilePath}`;
 
-    const provider = new WebsocketProvider(yjsUrl, roomName, yDoc);
+    const provider = new WebsocketProvider(yjsUrl, roomName, yDoc, {
+      connect: true,
+      resyncInterval: 5000, // Re-sync every 5s to handle dropped messages
+    } as any);
     providerRef.current = provider;
 
     // Resolve the current user's display name from the JWT (stored in ref to avoid re-runs)
@@ -1478,8 +1504,11 @@ export default function IDEWorkspace() {
     };
     const color = getHashColor(username);
 
-    // Set awareness for ALL roles so cursors are always visible to everyone
-    provider.awareness.setLocalStateField('user', { name: username, color });
+    // Set awareness immediately — broadcast presence to all users in the room right away
+    const announcePresence = () => {
+      provider.awareness.setLocalStateField('user', { name: username, color });
+    };
+    announcePresence();
 
     // Inject dynamic CSS for remote cursors/selections
     let styleEl = document.getElementById('yjs-awareness-styles') as HTMLStyleElement;
@@ -1535,31 +1564,68 @@ export default function IDEWorkspace() {
     provider.awareness.on('change', updateAwarenessStyles);
     updateAwarenessStyles();
 
-    provider.on('sync', (isSynced: boolean) => {
-      if (isSynced && !bindingRef.current) {
-        const model = editorRef.current?.getModel();
-        if (!model) return;
+    // Periodically re-announce presence so admin cursor stays visible even after
+    // other users disconnect/reconnect (awareness states can be cleared by reconnects)
+    const awarenessInterval = setInterval(() => {
+      if (provider.wsconnected) announcePresence();
+    }, 5000);
 
-        // Seed the Yjs doc with the file content only if the room is empty
-        // (first user opening this file). Other users will receive it via Yjs sync.
-        if (yText.toString() === '') {
-          const val = model.getValue();
-          if (val) yText.insert(0, val);
+    // ─── Core Binding Setup ────────────────────────────────────────────────
+    // Creates the two-way MonacoBinding between the editor model and the Yjs doc.
+    // Must be called AFTER the Yjs doc is synced with the server so that existing
+    // content (from other users already in the room) is applied to the editor.
+    let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const initBinding = () => {
+      // Guard: don't create a second binding if one already exists
+      if (bindingRef.current) return;
+      const editor = editorRef.current;
+      if (!editor) return;
+      const model = editor.getModel();
+      if (!model) return;
+
+      // Only seed the Yjs doc with file content when this is the FIRST user opening
+      // the file (room is empty). If other users are already editing, their content
+      // is already in the doc — we must NOT overwrite it.
+      if (yText.toString() === '') {
+        const val = model.getValue();
+        if (val) {
+          yDoc.transact(() => { yText.insert(0, val); });
         }
+      }
 
-        // Create the two-way binding between Monaco and Yjs
-        // Viewers get awareness (so their cursor shows) but editors get full two-way binding
-        const binding = new MonacoBinding(
-          yText,
-          model,
-          new Set([editorRef.current]),
-          provider.awareness
-        );
-        bindingRef.current = binding;
+      // Bind Monaco model ↔ Yjs doc (two-way: local edits → Yjs, Yjs changes → Monaco)
+      const binding = new MonacoBinding(yText, model, new Set([editor]), provider.awareness);
+      bindingRef.current = binding;
+
+      // Re-announce presence after binding so cursor position gets broadcast
+      announcePresence();
+    };
+
+    // FIX 1: Check if already synced (fast local network can sync before listener registers)
+    if ((provider as any).synced) {
+      initBinding();
+    }
+
+    // FIX 2: Standard sync event listener
+    provider.on('sync', (isSynced: boolean) => {
+      if (isSynced) initBinding();
+    });
+
+    // FIX 3: Fallback via status event — if 'sync' fired too early and was missed,
+    // try again 300ms after the WebSocket reports 'connected'
+    provider.on('status', ({ status }: { status: string }) => {
+      if (status === 'connected') {
+        if (fallbackTimer) clearTimeout(fallbackTimer);
+        fallbackTimer = setTimeout(() => {
+          if (!bindingRef.current) initBinding();
+        }, 300);
       }
     });
 
     return () => {
+      clearInterval(awarenessInterval);
+      if (fallbackTimer) clearTimeout(fallbackTimer);
       provider.awareness.off('change', updateAwarenessStyles);
       destroyYjs();
     };

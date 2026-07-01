@@ -123,7 +123,24 @@ export class TerminalGateway
       }
       projectMap.set(user.id || user.sub, (projectMap.get(user.id || user.sub) || 0) + 1);
       
-      setTimeout(() => this.broadcastProjectActiveUsers(projectId), 500);
+      // Immediately unicast the current state to the new client so they see
+      // who is online/what files are active without waiting for the next broadcast
+      const currentActiveUsers: Array<{ userId: string; username: string; role: string; activeFile: string | null }> = [];
+      for (const [, session] of TerminalGateway.socketSessions.entries()) {
+        if (session.projectId === projectId && session.role !== 'Admin') {
+          const existing = currentActiveUsers.find((u) => u.userId === session.userId);
+          if (existing) {
+            if (!existing.activeFile && session.activeFile) existing.activeFile = session.activeFile;
+          } else {
+            currentActiveUsers.push({ userId: session.userId, username: session.username, role: session.role, activeFile: session.activeFile });
+          }
+        }
+      }
+      client.emit('project.activeUsers', currentActiveUsers);
+
+      // Also broadcast to everyone else after a short delay (so the new user's entry is included)
+      setTimeout(() => this.broadcastProjectActiveUsers(projectId), 300);
+
     }
 
     if (projectId) {
