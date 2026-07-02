@@ -1484,7 +1484,6 @@ export default function IDEWorkspace() {
 
     const provider = new WebsocketProvider(yjsUrl, roomName, yDoc, {
       connect: true,
-      resyncInterval: 5000, // Re-sync every 5s to handle dropped messages
     } as any);
     providerRef.current = provider;
 
