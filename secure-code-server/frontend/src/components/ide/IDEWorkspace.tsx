@@ -2265,7 +2265,7 @@ export default function IDEWorkspace() {
                       return prev;
                     });
                   }}
-                  options={{ ...EDITOR_OPTIONS, readOnly: isViewer || isAdmin }}
+                  options={{ ...EDITOR_OPTIONS, ...(isViewer ? { domReadOnly: true } : {}) }}
                 />
               )
             ) : (
