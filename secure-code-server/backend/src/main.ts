@@ -1,39 +1,34 @@
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { json, urlencoded } from 'express';
+import * as http from 'http';
 import { WebSocketServer } from 'ws';
 // @ts-ignore
 import { setupWSConnection } from 'y-websocket/bin/utils';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
-  app.enableCors(); // Allow frontend to communicate with backend
-
-  // Increase payload limit to allow saving large files up to 50MB
-  app.use(json({ limit: '50mb' }));
-  app.use(urlencoded({ extended: true, limit: '50mb' }));
-
-  // Configure Yjs WebSocket Server BEFORE app.listen() so our upgrade handler
-  // is registered first — Socket.IO also hooks 'upgrade' during listen() and
-  // would silently drop /yjs WebSocket connections if it runs first.
-  const wss = new WebSocketServer({ noServer: true });
-
+  // ─── Yjs WebSocket Server — dedicated HTTP server on port 1234 ──────────
+  // MUST be on its own server, NOT shared with Socket.IO (port 3001).
+  // engine.io (Socket.IO's WS layer) intercepts ALL 'upgrade' events on the
+  // shared server and calls socket.destroy() for any path that isn't /socket.io,
+  // which silently kills every Yjs WebSocket connection before y-websocket sees it.
+  const yjsHttpServer = http.createServer((_, res) => {
+    res.writeHead(426, { 'Content-Type': 'text/plain' });
+    res.end('Upgrade Required — this port only serves WebSocket connections');
+  });
+  const wss = new WebSocketServer({ server: yjsHttpServer });
   wss.on('connection', (conn, req) => {
     setupWSConnection(conn, req, { gc: true });
   });
-
-  // Must get the HTTP server before listen() — NestJS creates it lazily
-  const server = app.getHttpServer();
-
-  server.on('upgrade', (request: any, socket: any, head: any) => {
-    if (request.url.startsWith('/yjs')) {
-      wss.handleUpgrade(request, socket, head, (ws) => {
-        wss.emit('connection', ws, request);
-      });
-    }
-    // All other upgrade requests (e.g. /socket.io/) fall through to Socket.IO
+  yjsHttpServer.listen(1234, '0.0.0.0', () => {
+    console.log('[Yjs] WebSocket server listening on port 1234');
   });
 
-  await app.listen(process.env.PORT ?? 3001, '0.0.0.0'); // NestJS on 3001, Next.js on 3000
+  // ─── NestJS / Socket.IO — port 3001 ─────────────────────────────────────
+  const app = await NestFactory.create(AppModule);
+  app.enableCors();
+  app.use(json({ limit: '50mb' }));
+  app.use(urlencoded({ extended: true, limit: '50mb' }));
+  await app.listen(process.env.PORT ?? 3001, '0.0.0.0');
 }
 bootstrap();

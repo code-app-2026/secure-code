@@ -1570,61 +1570,33 @@ export default function IDEWorkspace() {
     }, 5000);
 
     // ─── Core Binding Setup ────────────────────────────────────────────────
-    // Creates the two-way MonacoBinding between the editor model and the Yjs doc.
-    // Must be called AFTER the Yjs doc is synced with the server so that existing
-    // content (from other users already in the room) is applied to the editor.
-    let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
+    // Only create the binding AFTER the Yjs doc is fully synced with the server.
+    // The sync event fires once the server has delivered the complete document state.
+    // Creating the binding before sync would seed an empty room with stale disk content,
+    // overwriting other users' unsaved edits on the server.
+    provider.on('sync', (isSynced: boolean) => {
+      if (!isSynced || bindingRef.current) return;
 
-    const initBinding = () => {
-      // Guard: don't create a second binding if one already exists
-      if (bindingRef.current) return;
       const editor = editorRef.current;
       if (!editor) return;
       const model = editor.getModel();
       if (!model) return;
 
-      // Only seed the Yjs doc with file content when this is the FIRST user opening
-      // the file (room is empty). If other users are already editing, their content
-      // is already in the doc — we must NOT overwrite it.
-      if (yText.toString() === '') {
-        const val = model.getValue();
-        if (val) {
-          yDoc.transact(() => { yText.insert(0, val); });
-        }
+      // Seed the Yjs doc only if the room is empty (first user to open this file).
+      // If other users are already editing, their content is already in the doc.
+      if (yText.length === 0) {
+        yDoc.transact(() => {
+          yText.insert(0, model.getValue() || '');
+        });
       }
 
-      // Bind Monaco model ↔ Yjs doc (two-way: local edits → Yjs, Yjs changes → Monaco)
-      const binding = new MonacoBinding(yText, model, new Set([editor]), provider.awareness);
-      bindingRef.current = binding;
-
-      // Re-announce presence after binding so cursor position gets broadcast
+      // Two-way binding: local edits → Yjs server → all other clients
+      bindingRef.current = new MonacoBinding(yText, model, new Set([editor]), provider.awareness);
       announcePresence();
-    };
-
-    // FIX 1: Check if already synced (fast local network can sync before listener registers)
-    if ((provider as any).synced) {
-      initBinding();
-    }
-
-    // FIX 2: Standard sync event listener
-    provider.on('sync', (isSynced: boolean) => {
-      if (isSynced) initBinding();
-    });
-
-    // FIX 3: Fallback via status event — if 'sync' fired too early and was missed,
-    // try again 300ms after the WebSocket reports 'connected'
-    provider.on('status', ({ status }: { status: string }) => {
-      if (status === 'connected') {
-        if (fallbackTimer) clearTimeout(fallbackTimer);
-        fallbackTimer = setTimeout(() => {
-          if (!bindingRef.current) initBinding();
-        }, 300);
-      }
     });
 
     return () => {
       clearInterval(awarenessInterval);
-      if (fallbackTimer) clearTimeout(fallbackTimer);
       provider.awareness.off('change', updateAwarenessStyles);
       destroyYjs();
     };
