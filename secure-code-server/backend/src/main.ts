@@ -12,15 +12,18 @@ async function bootstrap() {
   // Increase payload limit to allow saving large files up to 50MB
   app.use(json({ limit: '50mb' }));
   app.use(urlencoded({ extended: true, limit: '50mb' }));
-  await app.listen(process.env.PORT ?? 3001, '0.0.0.0'); // NestJS runs on 3001, Next.js on 3000
 
-  // Configure Yjs WebSocket Server on the same HTTP server
-  const server = app.getHttpServer();
+  // Configure Yjs WebSocket Server BEFORE app.listen() so our upgrade handler
+  // is registered first — Socket.IO also hooks 'upgrade' during listen() and
+  // would silently drop /yjs WebSocket connections if it runs first.
   const wss = new WebSocketServer({ noServer: true });
 
   wss.on('connection', (conn, req) => {
     setupWSConnection(conn, req, { gc: true });
   });
+
+  // Must get the HTTP server before listen() — NestJS creates it lazily
+  const server = app.getHttpServer();
 
   server.on('upgrade', (request: any, socket: any, head: any) => {
     if (request.url.startsWith('/yjs')) {
@@ -28,6 +31,9 @@ async function bootstrap() {
         wss.emit('connection', ws, request);
       });
     }
+    // All other upgrade requests (e.g. /socket.io/) fall through to Socket.IO
   });
+
+  await app.listen(process.env.PORT ?? 3001, '0.0.0.0'); // NestJS on 3001, Next.js on 3000
 }
 bootstrap();
